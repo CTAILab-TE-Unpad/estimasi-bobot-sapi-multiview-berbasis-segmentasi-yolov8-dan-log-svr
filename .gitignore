@@ -1,0 +1,43 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing
+.pytest_cache
+
+# YOLO / Computer Vision caches and runs
+runs/
+*.mp4
+*.avi
+# (Opsional) Jangan melacak datasets jika ukurannya terlalu besar
+datasets/
+
+# (Opsional) Jangan melacak model jika terlalu besar untuk Git (pertimbangkan Git LFS)
+# models/*.pt
+# models/*.joblib
+
+# Logs and databases
+*.log
+*.sqlite
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
