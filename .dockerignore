@@ -1,0 +1,42 @@
+# ---- Python cache ----
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+script_final/.venv/
+
+# ---- Development tools ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Notebooks (not needed in Docker image) ----
+notebooks/
+script_final/*.ipynb
+**/*.ipynb
+
+# ---- Old script_final (legacy, not needed in image) ----
+script_final/
+
+# ---- Git ----
+.git/
+.gitignore
+
+# ---- Docs ----
+README.md
+*.md
+
+# ---- OS ----
+.DS_Store
+.env
+.env.*
+!.env.example

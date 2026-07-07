@@ -1,39 +1,46 @@
-# Byte-compiled / optimized / DLL files
+# ---- Python ----
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
 
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Environments
+# ---- Virtual environments ----
 .env
-.venv
-env/
+.venv/
 venv/
+env/
 ENV/
-env.bak/
-venv.bak/
 
-# Testing
-.pytest_cache
+# ---- Development tooling ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
 
-# YOLO / Computer Vision caches and runs
+# ---- YOLO runtime outputs ----
 runs/
 *.mp4
 *.avi
-# (Opsional) Jangan melacak datasets jika ukurannya terlalu besar
+
+# ---- Datasets (too large for Git — use DVC or Git LFS) ----
 datasets/
 
-# (Opsional) Jangan melacak model jika terlalu besar untuk Git (pertimbangkan Git LFS)
+# ---- Model artifacts (consider Git LFS for .pt files) ----
+# Uncomment to ignore model files:
 # models/*.pt
 # models/*.joblib
+# models/*.pkl
 
-# Logs and databases
+# ---- Logs ----
 *.log
 *.sqlite
 
-# OS generated files
+# ---- OS ----
 .DS_Store
 .DS_Store?
 ._*

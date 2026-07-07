@@ -1,0 +1,33 @@
+# =============================================================================
+# requirements/base.txt
+# Production dependencies for the FastAPI inference API.
+#
+# PyTorch is pinned to the CPU-only wheel to avoid pulling in CUDA libraries
+# (~800 MB savings vs the default pip wheel). If GPU inference is needed,
+# replace these two lines with the standard torch/torchvision from PyPI.
+# =============================================================================
+
+# --- Deep Learning (CPU-only) ---
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.1+cpu
+torchvision==0.18.1+cpu
+
+# --- Computer Vision & ML ---
+ultralytics>=8.0.0,<9.0.0
+opencv-python-headless>=4.8.0
+numpy>=1.24.0,<2.0.0
+scikit-learn>=1.3.0
+joblib>=1.3.0
+
+# --- API Framework ---
+fastapi>=0.103.0
+uvicorn[standard]>=0.23.0
+python-multipart>=0.0.6
+
+# --- Data & Visualization ---
+pandas>=2.0.0
+matplotlib>=3.7.0
+
+# --- Configuration ---
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
