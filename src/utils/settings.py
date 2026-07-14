@@ -19,7 +19,6 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
 
     model_config = SettingsConfigDict(
-        env_file=".env",
         env_prefix="CATTLE_",
         extra="ignore",
         case_sensitive=False,
