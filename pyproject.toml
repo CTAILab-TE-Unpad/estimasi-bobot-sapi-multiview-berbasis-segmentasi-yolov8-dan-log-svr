@@ -46,3 +46,6 @@ mypy_path = "src"
 dev = [
     "taskipy>=1.14.1",
 ]
+
+[tool.taskipy.tasks]
+run = "uvicorn src.main:app --reload --port 4001"
