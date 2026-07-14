@@ -6,9 +6,9 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from extractor.segmentation import BBox, BinaryMask, get_sticker_scale, run_segmentation
-from utils.exceptions import CalibrationError, SegmentationError
-from utils.settings import CHEST_DEPTH_TOP_FRACTION, CHEST_X_RATIO
+from src.extractor.segmentation import BBox, BinaryMask, get_sticker_scale, run_segmentation
+from src.utils.exceptions import CalibrationError, SegmentationError
+from src.utils.settings import CHEST_DEPTH_TOP_FRACTION, CHEST_X_RATIO
 
 logger = logging.getLogger(__name__)
 

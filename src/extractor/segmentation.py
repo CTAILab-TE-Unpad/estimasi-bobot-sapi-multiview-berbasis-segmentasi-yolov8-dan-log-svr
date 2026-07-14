@@ -7,8 +7,8 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from utils.exceptions import SegmentationError
-from utils.settings import STICKER_CONF_THRESHOLD, STICKER_TARGET_CM
+from src.utils.exceptions import SegmentationError
+from src.utils.settings import STICKER_CONF_THRESHOLD, STICKER_TARGET_CM
 
 logger = logging.getLogger(__name__)
 

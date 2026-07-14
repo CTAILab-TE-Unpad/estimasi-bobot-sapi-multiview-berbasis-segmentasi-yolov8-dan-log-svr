@@ -11,13 +11,13 @@ import uvicorn
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
-from extractor.morphometry import bridge_scale, process_back_view, process_side_view, ramanujan_girth
-from extractor.predictor import build_features, predict_weight
-from extractor.visualization import generate_result_visualization
-from utils.exceptions import CalibrationError, PredictionError, SegmentationError
-from utils.model_registry import ModelRegistry
-from utils.schema import CalibrationInfo, PhysicalMeasurements, PredictionResponse
-from utils.settings import get_settings
+from src.extractor.morphometry import bridge_scale, process_back_view, process_side_view, ramanujan_girth
+from src.extractor.predictor import build_features, predict_weight
+from src.extractor.visualization import generate_result_visualization
+from src.utils.exceptions import CalibrationError, PredictionError, SegmentationError
+from src.utils.model_registry import ModelRegistry
+from src.utils.schema import CalibrationInfo, PhysicalMeasurements, PredictionResponse
+from src.utils.settings import get_settings
 
 cfg = get_settings()
 
@@ -84,12 +84,12 @@ async def _handle_prediction_error(request: Request, exc: PredictionError) -> JS
     return JSONResponse(status_code=500, content={"error": "PREDICTION_FAILED", "message": str(exc)})
 
 
-@app.get("/health", tags=["System"])
+@app.get("/api/health", tags=["System"])
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/ready", tags=["System"])
+@app.get("/api/ready", tags=["System"])
 async def ready() -> dict[str, object]:
     return {"status": "ready" if _registry.is_loaded else "not_ready", "models_loaded": _registry.is_loaded}
 
@@ -105,7 +105,7 @@ def _decode_image(raw_bytes: bytes, field_name: str) -> np.ndarray:
     return img
 
 
-@app.post("/api/v1/predict", response_model=PredictionResponse, tags=["Inference"], summary="Estimate cattle live weight")
+@app.post("/api/predict", response_model=PredictionResponse, tags=["Inference"], summary="Estimate cattle live weight")
 async def predict(
     side_image: UploadFile = File(..., description="Side (lateral) view — JPEG or PNG"),
     back_image: UploadFile = File(..., description="Back (posterior) view — JPEG or PNG"),
@@ -171,6 +171,3 @@ async def predict(
         visualization_png_b64=viz_b64,
     )
 
-
-if __name__ == "__main__":
-    uvicorn.run("main:app", host=cfg.api_host, port=cfg.api_port, reload=False, workers=1, log_level=cfg.log_level.lower())

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 import joblib
 
 if TYPE_CHECKING:
-    from utils.settings import Settings
+    from src.utils.settings import Settings
 
 logger = logging.getLogger(__name__)
 

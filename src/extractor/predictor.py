@@ -5,7 +5,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from utils.exceptions import PredictionError
+from src.utils.exceptions import PredictionError
 
 logger = logging.getLogger(__name__)
 
