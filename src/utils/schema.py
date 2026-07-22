@@ -22,4 +22,3 @@ class PredictionResponse(BaseModel):
     calibration: CalibrationInfo
     measurements: PhysicalMeasurements
     model_features: dict[str, float]
-    visualization_png_b64: str

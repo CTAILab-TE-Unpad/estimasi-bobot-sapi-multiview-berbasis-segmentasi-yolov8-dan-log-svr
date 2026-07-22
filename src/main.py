@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -11,9 +13,13 @@ import uvicorn
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
-from src.extractor.morphometry import bridge_scale, process_back_view, process_side_view, ramanujan_girth
+from src.extractor.morphometry import (
+    bridge_scale,
+    process_back_view,
+    process_side_view,
+    ramanujan_girth,
+)
 from src.extractor.predictor import build_features, predict_weight
-from src.extractor.visualization import generate_result_visualization
 from src.utils.exceptions import CalibrationError, PredictionError, SegmentationError
 from src.utils.model_registry import ModelRegistry
 from src.utils.schema import CalibrationInfo, PhysicalMeasurements, PredictionResponse
@@ -23,12 +29,18 @@ cfg = get_settings()
 
 logger = logging.getLogger(__name__)
 
+# Thread pool shared across all requests. CPU-bound YOLO/SVR work runs here so
+# the asyncio event loop is never blocked by heavy computation.
+_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="inference")
+
 
 def _setup_logging(level: str) -> None:
     numeric_level = getattr(logging, level.upper(), logging.INFO)
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(
-        logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+        logging.Formatter(
+            "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+        )
     )
     root = logging.getLogger()
     root.setLevel(numeric_level)
@@ -49,6 +61,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.registry = _registry
     logger.info("Startup complete. Serving on %s:%d", cfg.api_host, cfg.api_port)
     yield
+    _executor.shutdown(wait=False)
     logger.info("Shutting down.")
 
 
@@ -71,17 +84,23 @@ def get_registry(request: Request) -> ModelRegistry:
 
 @app.exception_handler(SegmentationError)
 async def _handle_segmentation_error(request: Request, exc: SegmentationError) -> JSONResponse:
-    return JSONResponse(status_code=422, content={"error": "SEGMENTATION_FAILED", "message": str(exc)})
+    return JSONResponse(
+        status_code=422, content={"error": "SEGMENTATION_FAILED", "message": str(exc)}
+    )
 
 
 @app.exception_handler(CalibrationError)
 async def _handle_calibration_error(request: Request, exc: CalibrationError) -> JSONResponse:
-    return JSONResponse(status_code=422, content={"error": "CALIBRATION_FAILED", "message": str(exc)})
+    return JSONResponse(
+        status_code=422, content={"error": "CALIBRATION_FAILED", "message": str(exc)}
+    )
 
 
 @app.exception_handler(PredictionError)
 async def _handle_prediction_error(request: Request, exc: PredictionError) -> JSONResponse:
-    return JSONResponse(status_code=500, content={"error": "PREDICTION_FAILED", "message": str(exc)})
+    return JSONResponse(
+        status_code=500, content={"error": "PREDICTION_FAILED", "message": str(exc)}
+    )
 
 
 @app.get("/api/health", tags=["System"])
@@ -91,67 +110,86 @@ async def health() -> dict[str, str]:
 
 @app.get("/api/ready", tags=["System"])
 async def ready() -> dict[str, object]:
-    return {"status": "ready" if _registry.is_loaded else "not_ready", "models_loaded": _registry.is_loaded}
+    return {
+        "status": "ready" if _registry.is_loaded else "not_ready",
+        "models_loaded": _registry.is_loaded,
+    }
 
 
 def _decode_image(raw_bytes: bytes, field_name: str) -> np.ndarray:
     arr = np.frombuffer(raw_bytes, np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Could not decode '{field_name}'. Please upload a valid JPEG or PNG file.",
+        raise ValueError(
+            f"Could not decode '{field_name}'. Please upload a valid JPEG or PNG file."
         )
     return img
 
 
-@app.post("/api/predict", response_model=PredictionResponse, tags=["Inference"], summary="Estimate cattle live weight")
-async def predict(
-    side_image: UploadFile = File(..., description="Side (lateral) view — JPEG or PNG"),
-    back_image: UploadFile = File(..., description="Back (posterior) view — JPEG or PNG"),
-    registry: ModelRegistry = Depends(get_registry),
+def _run_prediction_pipeline(
+    side_bytes: bytes,
+    back_bytes: bytes,
+    registry: ModelRegistry,
+    side_filename: str,
+    back_filename: str,
 ) -> PredictionResponse:
-    side_img = _decode_image(await side_image.read(), "side_image")
-    back_img = _decode_image(await back_image.read(), "back_image")
+    """
+    Synchronous prediction pipeline — executed inside the thread pool so the
+    asyncio event loop stays unblocked.
+
+    Side and back inference run in parallel using a nested thread pool so that
+    both YOLO calls (segmentation + sticker) for each view happen concurrently.
+    """
+    # --- Decode images ---
+    side_img = _decode_image(side_bytes, "side_image")
+    back_img = _decode_image(back_bytes, "back_image")
+
     logger.info(
         "Predict request — side: '%s' (%dx%d), back: '%s' (%dx%d)",
-        side_image.filename, side_img.shape[1], side_img.shape[0],
-        back_image.filename, back_img.shape[1], back_img.shape[0],
+        side_filename,
+        side_img.shape[1],
+        side_img.shape[0],
+        back_filename,
+        back_img.shape[1],
+        back_img.shape[0],
     )
 
-    try:
-        side_res = process_side_view(side_img, registry.seg_model, registry.sticker_model)
-        back_res = process_back_view(back_img, registry.seg_model, registry.sticker_model)
-    except SegmentationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    try:
-        scale_side, scale_back, calib_source = bridge_scale(
-            side_res["scale"], back_res["scale"],
-            side_res["withers_height_px"], back_res["withers_height_px"],
+    # --- Parallel segmentation: side + back processed concurrently ---
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="seg") as seg_pool:
+        future_side = seg_pool.submit(
+            process_side_view, side_img, registry.seg_model, registry.sticker_model
         )
-    except CalibrationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        future_back = seg_pool.submit(
+            process_back_view, back_img, registry.seg_model, registry.sticker_model
+        )
+        side_res = future_side.result()
+        back_res = future_back.result()
 
+    # --- Scale calibration ---
+    scale_side, scale_back, calib_source = bridge_scale(
+        side_res["scale"],
+        back_res["scale"],
+        side_res["withers_height_px"],
+        back_res["withers_height_px"],
+    )
+
+    # --- Physical measurements ---
     body_length_cm = round(scale_side * side_res["body_length_px"], 2)
     withers_height_cm = round(scale_side * side_res["withers_height_px"], 2)
     b_cm = round(scale_side * side_res["b_px"], 2)
     a_cm = round(scale_back * back_res["a_px"], 2)
     chest_girth_cm = round(ramanujan_girth(a_cm, b_cm), 2)
 
-    logger.info("Measurements — BL: %.1f cm, WH: %.1f cm, CG: %.1f cm", body_length_cm, withers_height_cm, chest_girth_cm)
-
-    try:
-        features = build_features(body_length_cm, withers_height_cm, chest_girth_cm)
-        weight_kg = predict_weight(features, registry.svr_pipe, registry.meta["feature_columns"])
-    except PredictionError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    viz_b64 = generate_result_visualization(
-        side_img, side_res, back_img, back_res,
-        scale_side, scale_back,
-        body_length_cm, withers_height_cm, b_cm, a_cm, chest_girth_cm,
+    logger.info(
+        "Measurements — BL: %.1f cm, WH: %.1f cm, CG: %.1f cm",
+        body_length_cm,
+        withers_height_cm,
+        chest_girth_cm,
     )
+
+    # --- SVR prediction ---
+    features = build_features(body_length_cm, withers_height_cm, chest_girth_cm)
+    weight_kg = predict_weight(features, registry.svr_pipe, registry.meta["feature_columns"])
 
     return PredictionResponse(
         predicted_weight_kg=round(weight_kg, 2),
@@ -168,6 +206,45 @@ async def predict(
             chest_depth_2b_cm=round(2 * b_cm, 2),
         ),
         model_features={k: float(v) for k, v in features.items()},
-        visualization_png_b64=viz_b64,
     )
 
+
+@app.post(
+    "/api/predict",
+    response_model=PredictionResponse,
+    tags=["Inference"],
+    summary="Estimate cattle live weight",
+)
+async def predict(
+    side_image: UploadFile = File(..., description="Side (lateral) view — JPEG or PNG"),
+    back_image: UploadFile = File(..., description="Back (posterior) view — JPEG or PNG"),
+    registry: ModelRegistry = Depends(get_registry),
+) -> PredictionResponse:
+    # Read image bytes in the async context (non-blocking I/O)
+    side_bytes, back_bytes = await asyncio.gather(
+        side_image.read(),
+        back_image.read(),
+    )
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            _executor,
+            _run_prediction_pipeline,
+            side_bytes,
+            back_bytes,
+            registry,
+            side_image.filename or "side_image",
+            back_image.filename or "back_image",
+        )
+    except ValueError as exc:
+        # Image decode errors raised inside the thread
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SegmentationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except CalibrationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except PredictionError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return result

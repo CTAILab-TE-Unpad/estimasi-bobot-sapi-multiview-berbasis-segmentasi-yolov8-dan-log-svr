@@ -44,4 +44,4 @@ USER appuser
 
 EXPOSE 4001
 
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "4001", "--workers", "1"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "4001", "--workers", "1", "--loop", "uvloop"]
