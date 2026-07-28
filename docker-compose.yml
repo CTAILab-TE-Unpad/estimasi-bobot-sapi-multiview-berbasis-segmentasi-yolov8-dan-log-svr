@@ -1,0 +1,50 @@
+services:
+  cattle-api:
+    image: ${CATTLE_IMAGE:-cattle-weight-api:latest}
+    container_name: cattle-api
+    restart: unless-stopped
+    ports:
+      - "${CATTLE_PORT:-4001}:4001"
+
+    # ------------------------------------------------------------------ #
+    # Resource limits — penting untuk mencegah container menghabiskan     #
+    # seluruh RAM VPS dan menyebabkan VPS mati.                           #
+    # Sesuaikan nilai berikut dengan RAM VPS Anda:                        #
+    #   VPS 2 GB  → memory: "1.4g", memswap: "2.4g"                      #
+    #   VPS 4 GB  → memory: "2.5g", memswap: "3.5g"                      #
+    # ------------------------------------------------------------------ #
+    deploy:
+      resources:
+        limits:
+          memory: 1.4g       # hard cap: container di-kill jika lewat ini
+        reservations:
+          memory: 800m       # RAM yang "dipesan" saat scheduling
+    mem_swappiness: 30       # kurangi agresivitas penggunaan swap (0=min, 100=max)
+
+    environment:
+      # PyTorch / OpenMP thread count.
+      # Sesuaikan dengan jumlah vCPU VPS Anda (cek dengan: nproc).
+      # Rumus: OMP_NUM_THREADS = vCPU // 2  (karena kita run 2 parallel inference)
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
+      - MKL_NUM_THREADS=${MKL_NUM_THREADS:-2}
+
+      # Override model/server config jika perlu (opsional)
+      # - CATTLE_LOG_LEVEL=INFO
+      # - CATTLE_YOLO_SEG_MODEL=yolov8l-seg.pt
+
+    # Health check — Docker akan tahu kapan container benar-benar siap
+    # (setelah warm-up selesai), bukan hanya saat proses start.
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4001/api/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # start_period memberi waktu untuk load model + warm-up sebelum
+      # health check pertama dijalankan.
+      start_period: 120s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
