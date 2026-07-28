@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
