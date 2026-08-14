@@ -17,8 +17,14 @@ def ramanujan_girth(a: float, b: float) -> float:
     return float(np.pi * (3.0 * (a + b) - np.sqrt((3.0 * a + b) * (a + 3.0 * b))))
 
 
-def process_side_view(img: NDArray, seg_model: Any, sticker_model: Any) -> dict[str, Any]:
-    scale, sticker_bbox, _ = get_sticker_scale(img, sticker_model)
+def process_side_view(
+    img: NDArray,
+    seg_model: Any,
+    sticker_model: Any,
+    target_cm: float = 10.16,
+    shape: str = "square",
+) -> dict[str, Any]:
+    scale, sticker_bbox, _ = get_sticker_scale(img, sticker_model, target_cm=target_cm, shape=shape)
     cow_mask: BinaryMask = run_segmentation(img, seg_model)
 
     y_idx, x_idx = np.where(cow_mask == 255)
@@ -58,8 +64,14 @@ def process_side_view(img: NDArray, seg_model: Any, sticker_model: Any) -> dict[
     }
 
 
-def process_back_view(img: NDArray, seg_model: Any, sticker_model: Any) -> dict[str, Any]:
-    scale, sticker_bbox, _ = get_sticker_scale(img, sticker_model)
+def process_back_view(
+    img: NDArray,
+    seg_model: Any,
+    sticker_model: Any,
+    target_cm: float = 10.16,
+    shape: str = "square",
+) -> dict[str, Any]:
+    scale, sticker_bbox, _ = get_sticker_scale(img, sticker_model, target_cm=target_cm, shape=shape)
     cow_mask: BinaryMask = run_segmentation(img, seg_model)
 
     y_idx, x_idx = np.where(cow_mask == 255)

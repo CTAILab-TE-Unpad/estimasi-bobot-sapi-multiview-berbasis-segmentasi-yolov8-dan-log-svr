@@ -66,5 +66,5 @@ python api_inference_svr.py
 
 ---
 
-**Pengembang**: [Nama Tim / Pengembang Anda]
+**Pengembang**: [Bim Yusuf/ Lab CTAI]
 **Bahasa**: Python 3.10+

@@ -10,7 +10,7 @@ from typing import AsyncGenerator
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from src.extractor.morphometry import (
@@ -132,6 +132,9 @@ def _run_prediction_pipeline(
     registry: ModelRegistry,
     side_filename: str,
     back_filename: str,
+    side_sticker_cm: float = 10.16,
+    back_sticker_cm: float = 10.16,
+    sticker_shape: str = "square",
 ) -> PredictionResponse:
     """
     Synchronous prediction pipeline — executed inside the thread pool so the
@@ -154,13 +157,25 @@ def _run_prediction_pipeline(
         back_img.shape[0],
     )
 
+    shape_mode = "square" if sticker_shape.lower().startswith("sq") else "circle"
+
     # --- Parallel segmentation: side + back processed concurrently ---
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="seg") as seg_pool:
         future_side = seg_pool.submit(
-            process_side_view, side_img, registry.seg_model, registry.sticker_model
+            process_side_view,
+            side_img,
+            registry.seg_model,
+            registry.sticker_model,
+            target_cm=side_sticker_cm,
+            shape=shape_mode,
         )
         future_back = seg_pool.submit(
-            process_back_view, back_img, registry.seg_model, registry.sticker_model
+            process_back_view,
+            back_img,
+            registry.seg_model,
+            registry.sticker_model,
+            target_cm=back_sticker_cm,
+            shape=shape_mode,
         )
         side_res = future_side.result()
         back_res = future_back.result()
@@ -195,6 +210,8 @@ def _run_prediction_pipeline(
         predicted_weight_kg=round(weight_kg, 2),
         calibration=CalibrationInfo(
             scale_source=calib_source,
+            side_sticker_size_cm=side_sticker_cm,
+            back_sticker_size_cm=back_sticker_cm,
             scale_side_cm_per_px=round(scale_side, 6),
             scale_back_cm_per_px=round(scale_back, 6),
         ),
@@ -218,6 +235,9 @@ def _run_prediction_pipeline(
 async def predict(
     side_image: UploadFile = File(..., description="Side (lateral) view — JPEG or PNG"),
     back_image: UploadFile = File(..., description="Back (posterior) view — JPEG or PNG"),
+    side_sticker_cm: float = Form(10.16, description="Real size of calibration sticker on side image in cm"),
+    back_sticker_cm: float = Form(10.16, description="Real size of calibration sticker on back image in cm"),
+    sticker_shape: str = Form("square", description="Sticker shape model: 'square' or 'circle'"),
     registry: ModelRegistry = Depends(get_registry),
 ) -> PredictionResponse:
     # Read image bytes in the async context (non-blocking I/O)
@@ -236,6 +256,9 @@ async def predict(
             registry,
             side_image.filename or "side_image",
             back_image.filename or "back_image",
+            side_sticker_cm,
+            back_sticker_cm,
+            sticker_shape,
         )
     except ValueError as exc:
         # Image decode errors raised inside the thread

@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field
 
 class CalibrationInfo(BaseModel):
     scale_source: str = Field(description="One of: 'dual_sticker', 'bridged_from_back_sticker', 'bridged_from_side_sticker'.")
+    side_sticker_size_cm: float = Field(default=10.16, description="Side sticker calibration size in cm.")
+    back_sticker_size_cm: float = Field(default=10.16, description="Back sticker calibration size in cm.")
     scale_side_cm_per_px: float = Field(description="Side view pixel-to-cm conversion factor.")
     scale_back_cm_per_px: float = Field(description="Back view pixel-to-cm conversion factor.")
 

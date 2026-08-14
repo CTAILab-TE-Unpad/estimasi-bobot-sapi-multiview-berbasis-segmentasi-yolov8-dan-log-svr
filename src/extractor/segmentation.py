@@ -21,12 +21,13 @@ def get_sticker_scale(
     img: NDArray,
     model: Any,
     target_cm: float = STICKER_TARGET_CM,
+    shape: str = "square",
     conf: float = STICKER_CONF_THRESHOLD,
 ) -> StickerResult:
     results = model(img, conf=conf, verbose=False)
 
     for r in results:
-        if r.masks is None:
+        if r.masks is None or len(r.boxes) == 0:
             continue
         for mask_data in r.masks.data:
             mask_np = mask_data.cpu().numpy()
@@ -35,16 +36,24 @@ def get_sticker_scale(
             if len(y_idx) == 0:
                 continue
 
+            area = np.count_nonzero(mask_np > 0.5)
             x_min, x_max = int(x_idx.min()), int(x_idx.max())
             y_min, y_max = int(y_idx.min()), int(y_idx.max())
-            diameter_px = ((x_max - x_min) + (y_max - y_min)) / 2.0
+            width_px = x_max - x_min
+            height_px = y_max - y_min
 
-            if diameter_px <= 0:
-                continue
+            if shape.lower().startswith("sq"):
+                if area <= 0:
+                    continue
+                scale = target_cm / np.sqrt(float(area))
+            else:
+                diameter_px = (width_px + height_px) / 2.0
+                if diameter_px <= 0:
+                    continue
+                scale = target_cm / diameter_px
 
-            scale = target_cm / diameter_px
-            bbox: BBox = (x_min, y_min, x_max - x_min, y_max - y_min)
-            logger.debug("Sticker: diameter=%.1f px, scale=%.5f cm/px", diameter_px, scale)
+            bbox: BBox = (x_min, y_min, width_px, height_px)
+            logger.debug("Sticker: scale=%.5f cm/px (shape=%s)", scale, shape)
             return scale, bbox, (mask_np * 255).astype(np.uint8)
 
     logger.debug("No sticker detected.")
