@@ -47,10 +47,16 @@ def get_sticker_scale(
                     continue
                 scale = target_cm / np.sqrt(float(area))
             else:
-                diameter_px = (width_px + height_px) / 2.0
-                if diameter_px <= 0:
+                binary_mask = (mask_np > 0.5).astype(np.uint8)
+                contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if len(contours) > 0 and len(contours[0]) >= 5:
+                    (xc, yc), (d1, d2), angle = cv2.fitEllipse(contours[0])
+                    major_axis_px = float(max(d1, d2))
+                else:
+                    major_axis_px = float(max(width_px, height_px))
+                if major_axis_px <= 0:
                     continue
-                scale = target_cm / diameter_px
+                scale = target_cm / major_axis_px
 
             bbox: BBox = (x_min, y_min, width_px, height_px)
             logger.debug("Sticker: scale=%.5f cm/px (shape=%s)", scale, shape)

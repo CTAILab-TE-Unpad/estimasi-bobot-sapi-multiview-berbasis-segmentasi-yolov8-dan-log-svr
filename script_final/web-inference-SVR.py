@@ -12,7 +12,8 @@ from ultralytics import YOLO
 # --- Config & Page Setup ---
 st.set_page_config(page_title="Cattle Weight Inference", layout="wide", page_icon="🐮")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-MODELS_DIR = os.path.join(SCRIPT_DIR, "models")
+PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
+MODELS_DIR = os.path.join(PROJECT_DIR, "models") if os.path.exists(os.path.join(PROJECT_DIR, "models", "best_sticker.pt")) else os.path.join(SCRIPT_DIR, "models")
 
 YOLO_SEG_MODEL = os.path.join(MODELS_DIR, "yolov8l-seg.pt")
 YOLO_STICKER_MODEL = os.path.join(MODELS_DIR, "best_sticker.pt")
@@ -50,11 +51,17 @@ def get_sticker_scale(img: np.ndarray, model: YOLO, target_cm: float = 10.16, sh
                     width_px = x_max - x_min
                     height_px = y_max - y_min
                     
-                    if shape == 'square':
+                    if shape.lower().startswith('sq'):
                         scale = target_cm / np.sqrt(float(area))
-                    else:  # circular sticker diameter
-                        diameter_px = (width_px + height_px) / 2.0
-                        scale = target_cm / diameter_px if diameter_px > 0 else None
+                    else:  # circular sticker: fit ellipse to extract major axis (true diameter)
+                        binary_mask = (mask > 0.5).astype(np.uint8)
+                        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        if len(contours) > 0 and len(contours[0]) >= 5:
+                            (xc, yc), (d1, d2), angle = cv2.fitEllipse(contours[0])
+                            major_axis_px = float(max(d1, d2))
+                        else:
+                            major_axis_px = float(max(width_px, height_px))
+                        scale = target_cm / major_axis_px if major_axis_px > 0 else None
                         
                     return scale, (int(x_min), int(y_min), int(width_px), int(height_px)), mask
     return None, None, None
