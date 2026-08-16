@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 class ModelRegistry:
     def __init__(self) -> None:
         self._seg_model: Any = None
-        self._sticker_model: Any = None
+        self._sticker_square_model: Any = None
+        self._sticker_circle_model: Any = None
         self._svr_pipe: Any = None
         self._meta: dict[str, Any] | None = None
         self._loaded: bool = False
@@ -26,19 +27,28 @@ class ModelRegistry:
         logger.info("Loading ML models...")
         try:
             self._seg_model = YOLO(str(settings.yolo_seg_model_path))
-            self._sticker_model = YOLO(str(settings.yolo_sticker_model_path))
+            self._sticker_square_model = YOLO(str(settings.yolo_sticker_model_path))
+            
+            # Load circle sticker model if available
+            circle_model_path = settings.yolo_sticker_circle_model_path
+            if circle_model_path.exists():
+                self._sticker_circle_model = YOLO(str(circle_model_path))
+            else:
+                logger.warning("Circle sticker model not found at %s. Using square model as fallback.", circle_model_path)
+                self._sticker_circle_model = self._sticker_square_model
+
             self._svr_pipe = joblib.load(settings.svr_model_path)
             self._meta = joblib.load(settings.model_metadata_path)
             self._loaded = True
             logger.info("All models loaded successfully.")
 
-            # Warm-up: trigger PyTorch JIT kernel compilation before the first
-            # real request arrives. Without this, the first 1-2 requests can
-            # take 10-30 s on CPU, causing timeouts.
-            logger.info("Running warm-up inference on both YOLO models...")
+            # Warm-up: trigger PyTorch JIT kernel compilation
+            logger.info("Running warm-up inference on models...")
             _dummy = np.zeros((640, 640, 3), dtype=np.uint8)
             self._seg_model(_dummy, verbose=False)
-            self._sticker_model(_dummy, verbose=False)
+            self._sticker_square_model(_dummy, verbose=False)
+            if self._sticker_circle_model is not self._sticker_square_model:
+                self._sticker_circle_model(_dummy, verbose=False)
             logger.info("Warm-up complete. API is ready to serve requests.")
         except Exception as exc:
             logger.error("Model loading failed: %s", exc)
@@ -56,7 +66,13 @@ class ModelRegistry:
     @property
     def sticker_model(self) -> Any:
         self._assert_loaded()
-        return self._sticker_model
+        return self._sticker_square_model
+
+    def get_sticker_model(self, shape: str = "square") -> Any:
+        self._assert_loaded()
+        if str(shape).lower().startswith("cir"):
+            return self._sticker_circle_model
+        return self._sticker_square_model
 
     @property
     def svr_pipe(self) -> Any:

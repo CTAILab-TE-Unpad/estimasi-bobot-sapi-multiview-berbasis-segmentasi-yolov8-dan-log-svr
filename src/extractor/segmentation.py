@@ -27,40 +27,76 @@ def get_sticker_scale(
     results = model(img, conf=conf, verbose=False)
 
     for r in results:
-        if r.masks is None or len(r.boxes) == 0:
+        if len(r.boxes) == 0:
             continue
-        for mask_data in r.masks.data:
-            mask_np = mask_data.cpu().numpy()
-            mask_np = cv2.resize(mask_np, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
-            y_idx, x_idx = np.where(mask_np > 0.5)
-            if len(y_idx) == 0:
-                continue
 
-            area = np.count_nonzero(mask_np > 0.5)
-            x_min, x_max = int(x_idx.min()), int(x_idx.max())
-            y_min, y_max = int(y_idx.min()), int(y_idx.max())
-            width_px = x_max - x_min
-            height_px = y_max - y_min
+        box = r.boxes.xyxy[0].cpu().numpy().astype(int)
+        x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+        width_px = max(1, x2 - x1)
+        height_px = max(1, y2 - y1)
 
-            if shape.lower().startswith("sq"):
-                if area <= 0:
-                    continue
+        # Prepare mask if available
+        mask_uint8: BinaryMask | None = None
+        area: int = 0
+        if r.masks is not None and len(r.masks.data) > 0:
+            mask_np = r.masks.data[0].cpu().numpy()
+            mask_resized = cv2.resize(mask_np, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
+            mask_uint8 = (mask_resized > 0.5).astype(np.uint8) * 255
+            area = int(np.count_nonzero(mask_uint8 > 0))
+
+        if shape.lower().startswith("sq"):
+            if area > 0:
                 scale = target_cm / np.sqrt(float(area))
             else:
-                binary_mask = (mask_np > 0.5).astype(np.uint8)
-                contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if len(contours) > 0 and len(contours[0]) >= 5:
-                    (xc, yc), (d1, d2), angle = cv2.fitEllipse(contours[0])
-                    major_axis_px = float(max(d1, d2))
-                else:
-                    major_axis_px = float(max(width_px, height_px))
-                if major_axis_px <= 0:
-                    continue
-                scale = target_cm / major_axis_px
+                side_px = (width_px + height_px) / 2.0
+                scale = target_cm / side_px
+        else:
+            # --- Circular Sticker: High-Res Sub-Pixel Ellipse Fitting ---
+            # 1. Crop high-resolution ROI around detected bounding box
+            pad_x = int(width_px * 0.15)
+            pad_y = int(height_px * 0.15)
+            crop_x1 = max(0, x1 - pad_x)
+            crop_y1 = max(0, y1 - pad_y)
+            crop_x2 = min(img.shape[1], x2 + pad_x)
+            crop_y2 = min(img.shape[0], y2 + pad_y)
 
-            bbox: BBox = (x_min, y_min, width_px, height_px)
-            logger.debug("Sticker: scale=%.5f cm/px (shape=%s)", scale, shape)
-            return scale, bbox, (mask_np * 255).astype(np.uint8)
+            crop = img[crop_y1:crop_y2, crop_x1:crop_x2]
+            major_axis_px = float((width_px + height_px) / 2.0)  # default fallback
+
+            if crop.size > 0:
+                gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+                edges = cv2.Canny(blurred, 30, 100)
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+                cnts, _ = cv2.findContours(edges_closed, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+                crop_cx = crop.shape[1] / 2.0
+                crop_cy = crop.shape[0] / 2.0
+                expected_r = (width_px + height_px) / 4.0
+                best_score = float("inf")
+
+                for c in cnts:
+                    if len(c) >= 15 and cv2.contourArea(c) > 200:
+                        (xc, yc), (d1, d2), angle = cv2.fitEllipse(c)
+                        major = float(max(d1, d2))
+                        minor = float(min(d1, d2))
+                        dist_to_center = float(np.hypot(xc - crop_cx, yc - crop_cy))
+                        size_diff = abs(major - 2 * expected_r) / (2 * expected_r)
+
+                        if size_diff < 0.25 and dist_to_center < expected_r * 0.5:
+                            score = dist_to_center + size_diff * 50
+                            if score < best_score:
+                                best_score = score
+                                major_axis_px = major
+
+            if major_axis_px <= 0:
+                continue
+            scale = target_cm / major_axis_px
+
+        bbox: BBox = (x1, y1, width_px, height_px)
+        logger.debug("Sticker: scale=%.5f cm/px (shape=%s)", scale, shape)
+        return scale, bbox, mask_uint8
 
     logger.debug("No sticker detected.")
     return None, None, None

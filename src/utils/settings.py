@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     models_dir: Path = Field(default=Path("models"))
     yolo_seg_model: str = Field(default="yolov8l-seg.pt")
     yolo_sticker_model: str = Field(default="best_sticker.pt")
+    yolo_sticker_circle_model: str = Field(default="best_sticker_circle.pt")
     svr_model: str = Field(default="svr_log_pipeline.joblib")
     model_metadata: str = Field(default="model_metadata.joblib")
 
@@ -31,6 +32,10 @@ class Settings(BaseSettings):
     @property
     def yolo_sticker_model_path(self) -> Path:
         return self.models_dir / self.yolo_sticker_model
+
+    @property
+    def yolo_sticker_circle_model_path(self) -> Path:
+        return self.models_dir / self.yolo_sticker_circle_model
 
     @property
     def svr_model_path(self) -> Path:

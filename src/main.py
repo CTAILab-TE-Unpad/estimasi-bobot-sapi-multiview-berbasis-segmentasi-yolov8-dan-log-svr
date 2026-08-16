@@ -158,6 +158,7 @@ def _run_prediction_pipeline(
     )
 
     shape_mode = "square" if sticker_shape.lower().startswith("sq") else "circle"
+    sticker_model = registry.get_sticker_model(shape_mode)
 
     # --- Parallel segmentation: side + back processed concurrently ---
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="seg") as seg_pool:
@@ -165,7 +166,7 @@ def _run_prediction_pipeline(
             process_side_view,
             side_img,
             registry.seg_model,
-            registry.sticker_model,
+            sticker_model,
             target_cm=side_sticker_cm,
             shape=shape_mode,
         )
@@ -173,7 +174,7 @@ def _run_prediction_pipeline(
             process_back_view,
             back_img,
             registry.seg_model,
-            registry.sticker_model,
+            sticker_model,
             target_cm=back_sticker_cm,
             shape=shape_mode,
         )

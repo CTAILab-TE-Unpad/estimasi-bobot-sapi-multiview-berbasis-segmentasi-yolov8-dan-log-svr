@@ -16,19 +16,24 @@ PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 MODELS_DIR = os.path.join(PROJECT_DIR, "models") if os.path.exists(os.path.join(PROJECT_DIR, "models", "best_sticker.pt")) else os.path.join(SCRIPT_DIR, "models")
 
 YOLO_SEG_MODEL = os.path.join(MODELS_DIR, "yolov8l-seg.pt")
-YOLO_STICKER_MODEL = os.path.join(MODELS_DIR, "best_sticker.pt")
+YOLO_STICKER_SQUARE_MODEL = os.path.join(MODELS_DIR, "best_sticker.pt")
+YOLO_STICKER_CIRCLE_MODEL = os.path.join(MODELS_DIR, "best_sticker_circle.pt")
 SVR_MODEL_PATH = os.path.join(MODELS_DIR, "svr_log_pipeline.joblib")
 META_PATH = os.path.join(MODELS_DIR, "model_metadata.joblib")
 
 @st.cache_resource
 def load_models():
     model_seg = YOLO(YOLO_SEG_MODEL)
-    model_sticker = YOLO(YOLO_STICKER_MODEL)
+    model_sticker_square = YOLO(YOLO_STICKER_SQUARE_MODEL)
+    if os.path.exists(YOLO_STICKER_CIRCLE_MODEL):
+        model_sticker_circle = YOLO(YOLO_STICKER_CIRCLE_MODEL)
+    else:
+        model_sticker_circle = model_sticker_square
     svr_pipe = joblib.load(SVR_MODEL_PATH)
     meta = joblib.load(META_PATH)
-    return model_seg, model_sticker, svr_pipe, meta
+    return model_seg, model_sticker_square, model_sticker_circle, svr_pipe, meta
 
-model_seg, model_sticker, svr_pipe, meta = load_models()
+model_seg, model_sticker_square, model_sticker_circle, svr_pipe, meta = load_models()
 
 def ramanujan_girth(a: float, b: float, correction: float = 1.15) -> float:
     if a <= 0 or b <= 0:
@@ -39,31 +44,72 @@ def ramanujan_girth(a: float, b: float, correction: float = 1.15) -> float:
 def get_sticker_scale(img: np.ndarray, model: YOLO, target_cm: float = 10.16, shape: str = 'square', conf: float = 0.25):
     results = model(img, conf=conf, verbose=False)
     for r in results:
-        if r.masks is not None and len(r.boxes) > 0:
-            for mask_data in r.masks.data:
-                mask = mask_data.cpu().numpy()
-                mask = cv2.resize(mask, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
-                y_idx, x_idx = np.where(mask > 0.5)
-                if len(y_idx) > 0:
-                    area = np.count_nonzero(mask > 0.5)
-                    x_min, x_max = x_idx.min(), x_idx.max()
-                    y_min, y_max = y_idx.min(), y_idx.max()
-                    width_px = x_max - x_min
-                    height_px = y_max - y_min
-                    
-                    if shape.lower().startswith('sq'):
-                        scale = target_cm / np.sqrt(float(area))
-                    else:  # circular sticker: fit ellipse to extract major axis (true diameter)
-                        binary_mask = (mask > 0.5).astype(np.uint8)
-                        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                        if len(contours) > 0 and len(contours[0]) >= 5:
-                            (xc, yc), (d1, d2), angle = cv2.fitEllipse(contours[0])
-                            major_axis_px = float(max(d1, d2))
-                        else:
-                            major_axis_px = float(max(width_px, height_px))
-                        scale = target_cm / major_axis_px if major_axis_px > 0 else None
-                        
-                    return scale, (int(x_min), int(y_min), int(width_px), int(height_px)), mask
+        if len(r.boxes) == 0:
+            continue
+
+        box = r.boxes.xyxy[0].cpu().numpy().astype(int)
+        x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+        width_px = max(1, x2 - x1)
+        height_px = max(1, y2 - y1)
+
+        mask = None
+        area = 0
+        if r.masks is not None and len(r.masks.data) > 0:
+            mask_data = r.masks.data[0].cpu().numpy()
+            mask = cv2.resize(mask_data, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
+            area = int(np.count_nonzero(mask > 0.5))
+
+        if shape.lower().startswith('sq'):
+            if area > 0:
+                scale = target_cm / np.sqrt(float(area))
+            else:
+                side_px = (width_px + height_px) / 2.0
+                scale = target_cm / side_px
+        else:
+            # --- Circular Sticker: High-Res Sub-Pixel Invariant Ellipse Fitting ---
+            pad_x = int(width_px * 0.15)
+            pad_y = int(height_px * 0.15)
+            crop_x1 = max(0, x1 - pad_x)
+            crop_y1 = max(0, y1 - pad_y)
+            crop_x2 = min(img.shape[1], x2 + pad_x)
+            crop_y2 = min(img.shape[0], y2 + pad_y)
+
+            crop = img[crop_y1:crop_y2, crop_x1:crop_x2]
+            major_axis_px = float((width_px + height_px) / 2.0)  # default fallback
+
+            if crop.size > 0:
+                gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+                edges = cv2.Canny(blurred, 30, 100)
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+                cnts, _ = cv2.findContours(edges_closed, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+                crop_cx = crop.shape[1] / 2.0
+                crop_cy = crop.shape[0] / 2.0
+                expected_r = (width_px + height_px) / 4.0
+                best_score = float("inf")
+
+                for c in cnts:
+                    if len(c) >= 15 and cv2.contourArea(c) > 200:
+                        (xc, yc), (d1, d2), angle = cv2.fitEllipse(c)
+                        major = float(max(d1, d2))
+                        minor = float(min(d1, d2))
+                        dist_to_center = float(np.hypot(xc - crop_cx, yc - crop_cy))
+                        size_diff = abs(major - 2 * expected_r) / (2 * expected_r)
+
+                        if size_diff < 0.25 and dist_to_center < expected_r * 0.5:
+                            score = dist_to_center + size_diff * 50
+                            if score < best_score:
+                                best_score = score
+                                major_axis_px = major
+
+            if major_axis_px <= 0:
+                continue
+            scale = target_cm / major_axis_px
+
+        return scale, (int(x1), int(y1), int(width_px), int(height_px)), mask
+
     return None, None, None
 
 def process_side(img: np.ndarray, seg_model: YOLO, sticker_model: YOLO, target_cm: float = 10.16, shape: str = 'square'):
@@ -197,8 +243,9 @@ if side_file and back_file:
     back_img = cv2.imdecode(back_bytes, 1)
     
     with st.spinner("Mengolah segmentasi YOLOv8 & deteksi stiker..."):
-        side_res = process_side(side_img, model_seg, model_sticker, target_cm=side_sticker_cm, shape=shape_mode)
-        back_res = process_back(back_img, model_seg, model_sticker, target_cm=back_sticker_cm, shape=shape_mode)
+        active_sticker_model = model_sticker_circle if shape_mode == 'circle' else model_sticker_square
+        side_res = process_side(side_img, model_seg, active_sticker_model, target_cm=side_sticker_cm, shape=shape_mode)
+        back_res = process_back(back_img, model_seg, active_sticker_model, target_cm=back_sticker_cm, shape=shape_mode)
         
     if side_res and back_res:
         S_side = side_res['scale']
