@@ -7,11 +7,13 @@ import numpy as np
 import pandas as pd
 import joblib
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import JSONResponse
 import uvicorn
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive Agg backend to avoid GUI thread issues
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from ultralytics import YOLO
@@ -66,8 +68,8 @@ async def lifespan(app: FastAPI):
 # --- Initialize FastAPI with Lifespan ---
 app = FastAPI(
     title="Cattle Weight Estimation API",
-    description="Microservice to estimate cattle weight from Side and Back images using YOLOv8 and SVR.",
-    version="1.0.0",
+    description="Microservice to estimate cattle weight from Side and Back images using YOLOv8 and Log-SVR with calibration scale factors.",
+    version="1.1.0",
     lifespan=lifespan
 )
 
@@ -78,7 +80,18 @@ def ramanujan_girth(a: float, b: float, correction: float = 1.15) -> float:
     h = ((a - b) ** 2) / ((a + b) ** 2)
     return correction * np.pi * (a + b) * (1.0 + (3.0 * h) / (10.0 + np.sqrt(4.0 - 3.0 * h)))
 
-def get_sticker_scale(img: np.ndarray, model: YOLO, target_cm: float = 10.16, shape: str = 'square', conf: float = 0.25):
+def get_sticker_scale(
+    img: np.ndarray,
+    model: YOLO,
+    target_cm: float = 10.16,
+    shape: str = 'square',
+    conf: float = 0.25
+) -> Tuple[Optional[float], Optional[Tuple[int, int, int, int]], Optional[np.ndarray], Optional[Dict[str, Any]]]:
+    """
+    Deteksi stiker kalibrasi dan ekstraksi faktor skala (s_factor = target_cm / dimension_px).
+    Untuk stiker lingkaran: mengekstrak Sumbu Mayor elips sub-pixel (invarian terhadap distorsi kemiringan kamera).
+    Untuk stiker persegi: mengekstrak panjang sisi dari kotak / masker.
+    """
     results = model(img, conf=conf, verbose=False)
     for r in results:
         if len(r.boxes) == 0:
@@ -98,21 +111,31 @@ def get_sticker_scale(img: np.ndarray, model: YOLO, target_cm: float = 10.16, sh
 
         if shape.lower().startswith('sq'):
             if area > 0:
-                scale = target_cm / np.sqrt(float(area))
+                side_px = np.sqrt(float(area))
             else:
-                side_px = (width_px + height_px) / 2.0
-                scale = target_cm / side_px
+                side_px = float((width_px + height_px) / 2.0)
+            scale = target_cm / side_px
+            sticker_geom = {
+                "shape": "square",
+                "side_px": float(side_px),
+                "bbox": (x1, y1, width_px, height_px),
+                "crop_bbox": (max(0, x1 - 10), max(0, y1 - 10), min(img.shape[1], x2 + 10), min(img.shape[0], y2 + 10))
+            }
         else:
             # --- Circular Sticker: High-Res Sub-Pixel Invariant Ellipse Fitting ---
-            pad_x = int(width_px * 0.15)
-            pad_y = int(height_px * 0.15)
+            pad_x = int(width_px * 0.20)
+            pad_y = int(height_px * 0.20)
             crop_x1 = max(0, x1 - pad_x)
             crop_y1 = max(0, y1 - pad_y)
             crop_x2 = min(img.shape[1], x2 + pad_x)
             crop_y2 = min(img.shape[0], y2 + pad_y)
 
             crop = img[crop_y1:crop_y2, crop_x1:crop_x2]
-            major_axis_px = float((width_px + height_px) / 2.0)  # default fallback
+            major_axis_px = float((width_px + height_px) / 2.0)
+            minor_axis_px = float(min(width_px, height_px))
+            center_x = float(x1 + width_px / 2.0)
+            center_y = float(y1 + height_px / 2.0)
+            ellipse_angle = 0.0
 
             if crop.size > 0:
                 gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
@@ -140,21 +163,34 @@ def get_sticker_scale(img: np.ndarray, model: YOLO, target_cm: float = 10.16, sh
                             if score < best_score:
                                 best_score = score
                                 major_axis_px = major
+                                minor_axis_px = minor
+                                center_x = float(crop_x1 + xc)
+                                center_y = float(crop_y1 + yc)
+                                ellipse_angle = float(angle)
 
             if major_axis_px <= 0:
                 continue
             scale = target_cm / major_axis_px
+            sticker_geom = {
+                "shape": "circle",
+                "center": (center_x, center_y),
+                "major_axis": float(major_axis_px),
+                "minor_axis": float(minor_axis_px),
+                "angle": float(ellipse_angle),
+                "bbox": (x1, y1, width_px, height_px),
+                "crop_bbox": (crop_x1, crop_y1, crop_x2, crop_y2)
+            }
 
-        return scale, (int(x1), int(y1), int(width_px), int(height_px)), mask
+        return scale, (int(x1), int(y1), int(width_px), int(height_px)), mask, sticker_geom
 
-    return None, None, None
+    return None, None, None, None
 
 def process_side(img: np.ndarray, seg_model: YOLO, sticker_model: YOLO, target_cm: float = 10.16, shape: str = 'square') -> Optional[Dict[str, Any]]:
-    scale, sticker_bbox, sticker_mask = get_sticker_scale(img, sticker_model, target_cm=target_cm, shape=shape)
+    scale, sticker_bbox, sticker_mask, sticker_geom = get_sticker_scale(img, sticker_model, target_cm=target_cm, shape=shape)
     results = seg_model(img, verbose=False)
     cow_mask = None
     for r in results:
-        if r.masks is not None:
+        if r.masks is not None and len(r.masks.data) > 0:
             mask = r.masks.data[0].cpu().numpy()
             cow_mask = cv2.resize(mask, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
             cow_mask = (cow_mask * 255).astype(np.uint8)
@@ -164,8 +200,11 @@ def process_side(img: np.ndarray, seg_model: YOLO, sticker_model: YOLO, target_c
         return None
         
     y_idx, x_idx = np.where(cow_mask == 255)
-    x_min, x_max = x_idx.min(), x_idx.max()
-    y_min, y_max = y_idx.min(), y_idx.max()
+    if len(y_idx) == 0 or len(x_idx) == 0:
+        return None
+        
+    x_min, x_max = int(x_idx.min()), int(x_idx.max())
+    y_min, y_max = int(y_idx.min()), int(y_idx.max())
     
     BL_px = float(x_max - x_min)
     WH_px = float(y_max - y_min)
@@ -185,18 +224,28 @@ def process_side(img: np.ndarray, seg_model: YOLO, sticker_model: YOLO, target_c
         y_start, y_end = int(y_min), int(y_max)
         
     return {
-        'scale': scale, 'sticker_bbox': sticker_bbox,
-        'cow_mask': cow_mask, 'BL_px': BL_px, 'WH_px': WH_px, 'b_px': b_px,
-        'x_min': int(x_min), 'x_max': int(x_max), 'y_min': int(y_min), 'y_max': int(y_max),
-        'chest_x': chest_x, 'WH_y_start': y_start, 'WH_y_end': y_end
+        'scale': scale,
+        'sticker_bbox': sticker_bbox,
+        'sticker_geom': sticker_geom,
+        'cow_mask': cow_mask,
+        'BL_px': BL_px,
+        'WH_px': WH_px,
+        'b_px': b_px,
+        'x_min': x_min,
+        'x_max': x_max,
+        'y_min': y_min,
+        'y_max': y_max,
+        'chest_x': chest_x,
+        'WH_y_start': y_start,
+        'WH_y_end': y_end
     }
 
 def process_back(img: np.ndarray, seg_model: YOLO, sticker_model: YOLO, target_cm: float = 10.16, shape: str = 'square') -> Optional[Dict[str, Any]]:
-    scale, sticker_bbox, sticker_mask = get_sticker_scale(img, sticker_model, target_cm=target_cm, shape=shape)
+    scale, sticker_bbox, sticker_mask, sticker_geom = get_sticker_scale(img, sticker_model, target_cm=target_cm, shape=shape)
     results = seg_model(img, verbose=False)
     cow_mask = None
     for r in results:
-        if r.masks is not None:
+        if r.masks is not None and len(r.masks.data) > 0:
             mask = r.masks.data[0].cpu().numpy()
             cow_mask = cv2.resize(mask, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
             cow_mask = (cow_mask * 255).astype(np.uint8)
@@ -206,8 +255,11 @@ def process_back(img: np.ndarray, seg_model: YOLO, sticker_model: YOLO, target_c
         return None
         
     y_idx, x_idx = np.where(cow_mask == 255)
-    y_min, y_max = y_idx.min(), y_idx.max()
-    x_min, x_max = x_idx.min(), x_idx.max()
+    if len(y_idx) == 0 or len(x_idx) == 0:
+        return None
+        
+    y_min, y_max = int(y_idx.min()), int(y_idx.max())
+    x_min, x_max = int(x_idx.min()), int(x_idx.max())
     
     chest_y = int(y_min + 0.25 * (y_max - y_min))
     row_idx = np.where(cow_mask[chest_y, :] == 255)[0]
@@ -220,82 +272,166 @@ def process_back(img: np.ndarray, seg_model: YOLO, sticker_model: YOLO, target_c
         x_center = float(x_min + x_max) / 2.0
         
     return {
-        'scale': scale, 'sticker_bbox': sticker_bbox,
-        'cow_mask': cow_mask, 'a_px': a_px, 'x_center': x_center, 'chest_y': float(chest_y),
+        'scale': scale,
+        'sticker_bbox': sticker_bbox,
+        'sticker_geom': sticker_geom,
+        'cow_mask': cow_mask,
+        'a_px': a_px,
+        'x_center': x_center,
+        'chest_y': float(chest_y),
         'WH_px': float(y_max - y_min)
     }
 
-def generate_base64_visualizations(side_img: np.ndarray, side_res: dict, back_img: np.ndarray, back_res: dict,
-                                  S_side: float, S_back: float, BL_cm: float, WH_cm: float, b_cm: float, a_cm: float, CG_cm: float,
-                                  side_sticker_cm: float, back_sticker_cm: float) -> Dict[str, str]:
-    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+def draw_sticker_on_axes(ax, img: np.ndarray, res: dict, sticker_dim_cm: float, scale_val: float, title_prefix: str):
+    """Menggambar detail stiker sesuai bentuk (persegi / elips lingkaran) pada Matplotlib axes."""
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    ax.imshow(rgb)
+    ax.axis('off')
     
-    # 1. Side Plot
+    geom = res.get('sticker_geom')
+    if geom is not None:
+        shape_type = geom.get('shape', 'square')
+        if shape_type == 'circle':
+            xc, yc = geom['center']
+            major = geom['major_axis']
+            minor = geom['minor_axis']
+            angle = geom['angle']
+            
+            # Draw fitted ellipse
+            ellipse = patches.Ellipse(
+                (xc, yc), major, minor, angle=angle,
+                fill=False, edgecolor='cyan', lw=3, label=f'Fit (D={major:.1f}px)'
+            )
+            ax.add_patch(ellipse)
+            ax.plot(xc, yc, 'r+', ms=10, mew=2)
+            ax.set_title(f"{title_prefix} Sticker Circle\nDiameter={major:.1f}px | S={scale_val:.5f} cm/px", fontsize=11, fontweight='bold')
+        else:
+            x, y, w, h = geom['bbox']
+            side = geom.get('side_px', max(w, h))
+            rect = patches.Rectangle((x, y), w, h, fill=False, edgecolor='lime', lw=3, label=f'Fit (L={side:.1f}px)')
+            ax.add_patch(rect)
+            ax.set_title(f"{title_prefix} Sticker Square\nSide={side:.1f}px | S={scale_val:.5f} cm/px", fontsize=11, fontweight='bold')
+        ax.legend(loc='upper right', fontsize=9)
+    else:
+        ax.set_title(f"{title_prefix} Sticker\n[Sticker Undetected / Bridged]", fontsize=11, color='orange', fontweight='bold')
+
+def generate_visualizations(
+    side_img: np.ndarray, side_res: dict,
+    back_img: np.ndarray, back_res: dict,
+    S_side: float, S_back: float,
+    BL_cm: float, WH_cm: float, b_cm: float, a_cm: float, CG_cm: float,
+    side_dim_cm: float, back_dim_cm: float, shape_mode: str
+) -> Dict[str, str]:
+    """Menghasilkan gambar visualisasi morfometrik dan deteksi stiker sesuai bentuk (Base64 PNG)."""
+    
+    # 1. Visualisasi Morfometrik Sapi (Side & Back)
+    fig_morph, axes_m = plt.subplots(1, 2, figsize=(16, 7))
+    
+    # Side Morfometri
     side_rgb = cv2.cvtColor(side_img, cv2.COLOR_BGR2RGB)
     ov_side = side_rgb.copy()
     ov_side[side_res['cow_mask'] == 255] = [0, 255, 0]
-    side_blend = cv2.addWeighted(side_rgb, 0.7, ov_side, 0.3, 0)
+    side_blend = cv2.addWeighted(side_rgb, 0.75, ov_side, 0.25, 0)
     
     x_min, x_max = side_res['x_min'], side_res['x_max']
     y_min, y_max = side_res['y_min'], side_res['y_max']
     chest_x = side_res['chest_x']
     
-    axes[0].imshow(side_blend)
-    axes[0].plot([x_min + (x_max-x_min)/2]*2, [y_min, y_max], 'c-', lw=4, label=f'WH = {WH_cm:.1f} cm')
-    axes[0].plot([x_min, x_max], [y_min + 100]*2, 'y-', lw=4, label=f'BL = {BL_cm:.1f} cm')
-    axes[0].plot([chest_x]*2, [side_res['WH_y_start'], side_res['WH_y_end']], 'm-', lw=4, label=f'2b = {2*b_cm:.1f} cm')
+    axes_m[0].imshow(side_blend)
+    axes_m[0].plot([x_min + (x_max - x_min) / 2]*2, [y_min, y_max], 'c-', lw=4, label=f'WH = {WH_cm:.1f} cm')
+    axes_m[0].plot([x_min, x_max], [y_min + int((y_max - y_min)*0.15)]*2, 'y-', lw=4, label=f'BL = {BL_cm:.1f} cm')
+    axes_m[0].plot([chest_x]*2, [side_res['WH_y_start'], side_res['WH_y_end']], 'm-', lw=4, label=f'2b = {2*b_cm:.1f} cm')
+    axes_m[0].set_title(f"Morfometri Tampak Samping (Side View)\nS_factor = {S_side:.5f} cm/px", fontsize=12, fontweight='bold')
+    axes_m[0].legend(loc='upper right', fontsize=10)
+    axes_m[0].axis('off')
     
-    if side_res['sticker_bbox'] is not None:
-        sbx, sby, sbw, sbh = side_res['sticker_bbox']
-        rect = patches.Rectangle((sbx, sby), sbw, sbh, linewidth=2, edgecolor='r', facecolor='none', label='Sticker')
-        axes[0].add_patch(rect)
-    
-    axes[0].set_title(f"Side View (Scale={S_side:.5f} cm/px | Sticker={side_sticker_cm}cm)")
-    axes[0].legend(loc='upper right')
-    axes[0].axis('off')
-    
-    # 2. Back Plot
+    # Back Morfometri
     back_rgb = cv2.cvtColor(back_img, cv2.COLOR_BGR2RGB)
     ov_back = back_rgb.copy()
     ov_back[back_res['cow_mask'] == 255] = [0, 255, 0]
-    back_blend = cv2.addWeighted(back_rgb, 0.7, ov_back, 0.3, 0)
+    back_blend = cv2.addWeighted(back_rgb, 0.75, ov_back, 0.25, 0)
     
     xc = back_res['x_center']
     yc = back_res['chest_y']
     a_px = back_res['a_px']
     b_px = side_res['b_px']
     
-    axes[1].imshow(back_blend)
-    axes[1].plot([xc - a_px, xc + a_px], [yc]*2, 'm-', lw=4, label=f'2a = {2*a_cm:.1f} cm')
+    axes_m[1].imshow(back_blend)
+    axes_m[1].plot([xc - a_px, xc + a_px], [yc]*2, 'm-', lw=4, label=f'2a = {2*a_cm:.1f} cm')
+    ellipse_girth = patches.Ellipse((xc, yc), 2 * a_px, 2 * b_px, fill=False, edgecolor='deepskyblue', lw=3, label=f'CG = {CG_cm:.1f} cm')
+    axes_m[1].add_patch(ellipse_girth)
+    axes_m[1].set_title(f"Morfometri Tampak Belakang (Back View)\nS_factor = {S_back:.5f} cm/px", fontsize=12, fontweight='bold')
+    axes_m[1].legend(loc='upper right', fontsize=10)
+    axes_m[1].axis('off')
     
-    if back_res['sticker_bbox'] is not None:
-        bbx, bby, bbw, bbh = back_res['sticker_bbox']
-        rect_back = patches.Rectangle((bbx, bby), bbw, bbh, linewidth=2, edgecolor='r', facecolor='none', label='Sticker')
-        axes[1].add_patch(rect_back)
-    
-    ellipse = patches.Ellipse((xc, yc), 2*a_px, 2*b_px, fill=False, edgecolor='blue', lw=3, label=f'CG = {CG_cm:.1f} cm')
-    axes[1].add_patch(ellipse)
-    
-    axes[1].set_title(f"Back View (Scale={S_back:.5f} cm/px | Sticker={back_sticker_cm}cm)")
-    axes[1].legend(loc='upper right')
-    axes[1].axis('off')
-    
-    buf = io.BytesIO()
     plt.tight_layout()
-    fig.savefig(buf, format='png', bbox_inches='tight', dpi=100)
-    buf.seek(0)
-    img_b64 = base64.b64encode(buf.read()).decode('utf-8')
-    plt.close(fig)
-    return img_b64
+    buf_m = io.BytesIO()
+    fig_morph.savefig(buf_m, format='png', bbox_inches='tight', dpi=120)
+    buf_m.seek(0)
+    morph_b64 = base64.b64encode(buf_m.read()).decode('utf-8')
+    plt.close(fig_morph)
+    
+    # 2. Visualisasi Deteksi Stiker Sesuai Bentuk (Side & Back Zoom-in)
+    fig_stick, axes_s = plt.subplots(1, 2, figsize=(14, 6))
+    draw_sticker_on_axes(axes_s[0], side_img, side_res, side_dim_cm, S_side, "Tampak Samping")
+    draw_sticker_on_axes(axes_s[1], back_img, back_res, back_dim_cm, S_back, "Tampak Belakang")
+    
+    plt.tight_layout()
+    buf_s = io.BytesIO()
+    fig_stick.savefig(buf_s, format='png', bbox_inches='tight', dpi=120)
+    buf_s.seek(0)
+    sticker_b64 = base64.b64encode(buf_s.read()).decode('utf-8')
+    plt.close(fig_stick)
+    
+    # 3. Visualisasi Dashboard Lengkap (4 Panel Grid)
+    fig_all, axes_all = plt.subplots(2, 2, figsize=(16, 12))
+    
+    # Row 1: Morfometri
+    axes_all[0, 0].imshow(side_blend)
+    axes_all[0, 0].plot([x_min + (x_max - x_min) / 2]*2, [y_min, y_max], 'c-', lw=3, label=f'WH = {WH_cm:.1f} cm')
+    axes_all[0, 0].plot([x_min, x_max], [y_min + int((y_max - y_min)*0.15)]*2, 'y-', lw=3, label=f'BL = {BL_cm:.1f} cm')
+    axes_all[0, 0].plot([chest_x]*2, [side_res['WH_y_start'], side_res['WH_y_end']], 'm-', lw=3, label=f'2b = {2*b_cm:.1f} cm')
+    axes_all[0, 0].set_title("Morfometri Samping (BL, WH, 2b)", fontsize=11, fontweight='bold')
+    axes_all[0, 0].legend(loc='upper right', fontsize=8)
+    axes_all[0, 0].axis('off')
+    
+    axes_all[0, 1].imshow(back_blend)
+    axes_all[0, 1].plot([xc - a_px, xc + a_px], [yc]*2, 'm-', lw=3, label=f'2a = {2*a_cm:.1f} cm')
+    axes_all[0, 1].add_patch(patches.Ellipse((xc, yc), 2 * a_px, 2 * b_px, fill=False, edgecolor='deepskyblue', lw=3, label=f'CG = {CG_cm:.1f} cm'))
+    axes_all[0, 1].set_title("Morfometri Belakang (2a, CG)", fontsize=11, fontweight='bold')
+    axes_all[0, 1].legend(loc='upper right', fontsize=8)
+    axes_all[0, 1].axis('off')
+    
+    # Row 2: Stiker Sesuai Bentuk
+    draw_sticker_on_axes(axes_all[1, 0], side_img, side_res, side_dim_cm, S_side, "Deteksi Stiker Samping")
+    draw_sticker_on_axes(axes_all[1, 1], back_img, back_res, back_dim_cm, S_back, "Deteksi Stiker Belakang")
+    
+    plt.tight_layout()
+    buf_all = io.BytesIO()
+    fig_all.savefig(buf_all, format='png', bbox_inches='tight', dpi=120)
+    buf_all.seek(0)
+    full_b64 = base64.b64encode(buf_all.read()).decode('utf-8')
+    plt.close(fig_all)
+    
+    return {
+        "morphometry_b64": morph_b64,
+        "sticker_detection_b64": sticker_b64,
+        "full_dashboard_b64": full_b64
+    }
 
 # --- API Endpoint ---
 @app.post("/predict", summary="Inference endpoint to calculate physical dimensions and estimate weight.")
 async def predict(
     side_image: UploadFile = File(..., description="JPEG/PNG image representing side view of the cow"),
     back_image: UploadFile = File(..., description="JPEG/PNG image representing back view of the cow"),
-    side_sticker_cm: float = Form(10.16, description="Real size of calibration sticker on side image in cm"),
-    back_sticker_cm: float = Form(10.16, description="Real size of calibration sticker on back image in cm"),
-    sticker_shape: str = Form("square", description="Sticker shape model: 'square' or 'circle'")
+    side_sticker_cm: Optional[float] = Form(None, description="Panjang sisi persegi atau diameter lingkaran stiker tampak samping (cm)"),
+    back_sticker_cm: Optional[float] = Form(None, description="Panjang sisi persegi atau diameter lingkaran stiker tampak belakang (cm)"),
+    diameter_cm: Optional[float] = Form(None, description="Diameter stiker lingkaran (cm) jika menggunakan stiker bulat"),
+    side_diameter_cm: Optional[float] = Form(None, description="Diameter stiker lingkaran tampak samping (cm)"),
+    back_diameter_cm: Optional[float] = Form(None, description="Diameter stiker lingkaran tampak belakang (cm)"),
+    side_size_cm: Optional[float] = Form(None, description="Ukuran stiker tampak samping (cm)"),
+    back_size_cm: Optional[float] = Form(None, description="Ukuran stiker tampak belakang (cm)"),
+    sticker_shape: str = Form("square", description="Bentuk stiker: 'square' (persegi) atau 'circle' (lingkaran)")
 ):
     try:
         side_bytes = await side_image.read()
@@ -316,11 +452,38 @@ async def predict(
 
     logger.info("Executing pipeline on uploaded images...")
     
-    shape_mode = 'square' if sticker_shape.lower().startswith('sq') else 'circle'
+    # 1. Resolve sticker shape & dimension
+    shape_mode = 'circle' if str(sticker_shape).lower().startswith('cir') else 'square'
+    
+    # Resolusi dimensi stiker samping (cm)
+    if side_diameter_cm is not None:
+        side_dim = float(side_diameter_cm)
+    elif diameter_cm is not None and shape_mode == 'circle':
+        side_dim = float(diameter_cm)
+    elif side_size_cm is not None:
+        side_dim = float(side_size_cm)
+    elif side_sticker_cm is not None:
+        side_dim = float(side_sticker_cm)
+    else:
+        side_dim = 14.0 if shape_mode == 'circle' else 10.16
+
+    # Resolusi dimensi stiker belakang (cm)
+    if back_diameter_cm is not None:
+        back_dim = float(back_diameter_cm)
+    elif diameter_cm is not None and shape_mode == 'circle':
+        back_dim = float(diameter_cm)
+    elif back_size_cm is not None:
+        back_dim = float(back_size_cm)
+    elif back_sticker_cm is not None:
+        back_dim = float(back_sticker_cm)
+    else:
+        back_dim = 14.0 if shape_mode == 'circle' else 10.16
+
     active_sticker_model = model_sticker_circle if shape_mode == 'circle' else model_sticker_square
     
-    side_res = process_side(side_img, model_seg, active_sticker_model, target_cm=side_sticker_cm, shape=shape_mode)
-    back_res = process_back(back_img, model_seg, active_sticker_model, target_cm=back_sticker_cm, shape=shape_mode)
+    # 2. Process side and back views
+    side_res = process_side(side_img, model_seg, active_sticker_model, target_cm=side_dim, shape=shape_mode)
+    back_res = process_back(back_img, model_seg, active_sticker_model, target_cm=back_dim, shape=shape_mode)
     
     if not side_res or not back_res:
         raise HTTPException(status_code=422, detail="Failed to segment the cow silhouette in one or both views.")
@@ -346,6 +509,7 @@ async def predict(
     elif S_side is None and S_back is None:
         raise HTTPException(status_code=422, detail="Calibration sticker undetected in both views. Cannot compute real-world measurements.")
 
+    # 3. Calculate Morphometrics in cm
     BL_cm = S_side * side_res['BL_px']
     WH_cm = S_side * side_res['WH_px']
     b_cm  = S_side * side_res['b_px']
@@ -371,26 +535,34 @@ async def predict(
     features_df = pd.DataFrame([features_dict])
     features_df = features_df[meta['feature_columns']]
     
+    # 4. Predict Weight with Log-SVR
     log_pred = svr_pipe.predict(features_df)[0]
     weight_pred = float(np.exp(log_pred))
     
-    visualizations_b64 = generate_base64_visualizations(
+    # 5. Generate Visualizations (Morphometry + Sticker Detection per Shape)
+    vis_dict = generate_visualizations(
         side_img, side_res, back_img, back_res,
         S_side, S_back, BL_cm, WH_cm, b_cm, a_cm, CG_cm,
-        side_sticker_cm, back_sticker_cm
+        side_dim, back_dim, shape_mode
     )
     
     response_payload = {
         "success": True,
         "predicted_weight_kg": round(weight_pred, 2),
-        "calibration": {
-            "scale_source": calib_source,
-            "side_sticker_size_cm": side_sticker_cm,
-            "back_sticker_size_cm": back_sticker_cm,
-            "scale_side_cm_per_px": float(S_side),
-            "scale_back_cm_per_px": float(S_back)
+        "s_factor": {
+            "side": float(S_side),
+            "back": float(S_back),
+            "unit": "cm/px"
         },
-        "features": {
+        "calibration": {
+            "sticker_shape": shape_mode,
+            "scale_source": calib_source,
+            "side_sticker_size_cm": float(side_dim),
+            "back_sticker_size_cm": float(back_dim),
+            "s_factor_side": float(S_side),
+            "s_factor_back": float(S_back)
+        },
+        "physical_measurements": {
             "body_length_cm": round(BL_cm, 2),
             "withers_height_cm": round(WH_cm, 2),
             "chest_girth_cm": round(CG_cm, 2),
@@ -398,7 +570,10 @@ async def predict(
             "chest_depth_2b_cm": round(2 * b_cm, 2)
         },
         "all_model_features": {k: float(v) for k, v in features_dict.items()},
-        "visualization_png_b64": visualizations_b64
+        "visualizations": vis_dict,
+        "visualization_png_b64": vis_dict["full_dashboard_b64"],
+        "visualization_morphometry_b64": vis_dict["morphometry_b64"],
+        "visualization_sticker_b64": vis_dict["sticker_detection_b64"]
     }
     
     return JSONResponse(content=response_payload)

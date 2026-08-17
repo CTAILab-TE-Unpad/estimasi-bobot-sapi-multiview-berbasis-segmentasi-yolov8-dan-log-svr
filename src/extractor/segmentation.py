@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 BinaryMask = NDArray[np.uint8]
 BBox = tuple[int, int, int, int]
-StickerResult = tuple[float | None, BBox | None, BinaryMask | None]
+StickerResult = tuple[float | None, BBox | None, BinaryMask | None, dict[str, Any] | None]
 
 
 def get_sticker_scale(
@@ -46,22 +46,31 @@ def get_sticker_scale(
 
         if shape.lower().startswith("sq"):
             if area > 0:
-                scale = target_cm / np.sqrt(float(area))
+                side_px = np.sqrt(float(area))
             else:
-                side_px = (width_px + height_px) / 2.0
-                scale = target_cm / side_px
+                side_px = float((width_px + height_px) / 2.0)
+            scale = target_cm / side_px
+            sticker_geom = {
+                "shape": "square",
+                "side_px": float(side_px),
+                "bbox": (x1, y1, width_px, height_px),
+                "crop_bbox": (max(0, x1 - 10), max(0, y1 - 10), min(img.shape[1], x2 + 10), min(img.shape[0], y2 + 10))
+            }
         else:
             # --- Circular Sticker: High-Res Sub-Pixel Ellipse Fitting ---
-            # 1. Crop high-resolution ROI around detected bounding box
-            pad_x = int(width_px * 0.15)
-            pad_y = int(height_px * 0.15)
+            pad_x = int(width_px * 0.20)
+            pad_y = int(height_px * 0.20)
             crop_x1 = max(0, x1 - pad_x)
             crop_y1 = max(0, y1 - pad_y)
             crop_x2 = min(img.shape[1], x2 + pad_x)
             crop_y2 = min(img.shape[0], y2 + pad_y)
 
             crop = img[crop_y1:crop_y2, crop_x1:crop_x2]
-            major_axis_px = float((width_px + height_px) / 2.0)  # default fallback
+            major_axis_px = float((width_px + height_px) / 2.0)
+            minor_axis_px = float(min(width_px, height_px))
+            center_x = float(x1 + width_px / 2.0)
+            center_y = float(y1 + height_px / 2.0)
+            ellipse_angle = 0.0
 
             if crop.size > 0:
                 gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
@@ -89,17 +98,30 @@ def get_sticker_scale(
                             if score < best_score:
                                 best_score = score
                                 major_axis_px = major
+                                minor_axis_px = minor
+                                center_x = float(crop_x1 + xc)
+                                center_y = float(crop_y1 + yc)
+                                ellipse_angle = float(angle)
 
             if major_axis_px <= 0:
                 continue
             scale = target_cm / major_axis_px
+            sticker_geom = {
+                "shape": "circle",
+                "center": (center_x, center_y),
+                "major_axis": float(major_axis_px),
+                "minor_axis": float(minor_axis_px),
+                "angle": float(ellipse_angle),
+                "bbox": (x1, y1, width_px, height_px),
+                "crop_bbox": (crop_x1, crop_y1, crop_x2, crop_y2)
+            }
 
         bbox: BBox = (x1, y1, width_px, height_px)
         logger.debug("Sticker: scale=%.5f cm/px (shape=%s)", scale, shape)
-        return scale, bbox, mask_uint8
+        return scale, bbox, mask_uint8, sticker_geom
 
     logger.debug("No sticker detected.")
-    return None, None, None
+    return None, None, None, None
 
 
 def run_segmentation(img: NDArray, model: Any) -> BinaryMask:

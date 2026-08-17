@@ -24,7 +24,7 @@ def process_side_view(
     target_cm: float = 10.16,
     shape: str = "square",
 ) -> dict[str, Any]:
-    scale, sticker_bbox, _ = get_sticker_scale(img, sticker_model, target_cm=target_cm, shape=shape)
+    scale, sticker_bbox, _, sticker_geom = get_sticker_scale(img, sticker_model, target_cm=target_cm, shape=shape)
     cow_mask: BinaryMask = run_segmentation(img, seg_model)
 
     y_idx, x_idx = np.where(cow_mask == 255)
@@ -53,6 +53,7 @@ def process_side_view(
     return {
         "scale": scale,
         "sticker_bbox": sticker_bbox,
+        "sticker_geom": sticker_geom,
         "cow_mask": cow_mask,
         "body_length_px": body_length_px,
         "withers_height_px": withers_height_px,
@@ -71,7 +72,7 @@ def process_back_view(
     target_cm: float = 10.16,
     shape: str = "square",
 ) -> dict[str, Any]:
-    scale, sticker_bbox, _ = get_sticker_scale(img, sticker_model, target_cm=target_cm, shape=shape)
+    scale, sticker_bbox, _, sticker_geom = get_sticker_scale(img, sticker_model, target_cm=target_cm, shape=shape)
     cow_mask: BinaryMask = run_segmentation(img, seg_model)
 
     y_idx, x_idx = np.where(cow_mask == 255)
@@ -93,6 +94,7 @@ def process_back_view(
     return {
         "scale": scale,
         "sticker_bbox": sticker_bbox,
+        "sticker_geom": sticker_geom,
         "cow_mask": cow_mask,
         "a_px": a_px,
         "x_center": x_center,
