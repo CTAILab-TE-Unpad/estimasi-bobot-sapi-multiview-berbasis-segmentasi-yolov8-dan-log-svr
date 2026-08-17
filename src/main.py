@@ -388,43 +388,16 @@ def _run_prediction_pipeline(
 async def predict(
     side_image: UploadFile = File(..., description="Side (lateral) view — JPEG or PNG"),
     back_image: UploadFile = File(..., description="Back (posterior) view — JPEG or PNG"),
-    side_sticker_cm: Optional[float] = Form(None, description="Real size / diameter of calibration sticker on side image in cm"),
-    back_sticker_cm: Optional[float] = Form(None, description="Real size / diameter of calibration sticker on back image in cm"),
-    diameter_cm: Optional[float] = Form(None, description="Alias for circle sticker diameter in cm"),
-    side_diameter_cm: Optional[float] = Form(None, description="Side view circle sticker diameter in cm"),
-    back_diameter_cm: Optional[float] = Form(None, description="Back view circle sticker diameter in cm"),
-    side_size_cm: Optional[float] = Form(None, description="Side sticker size in cm"),
-    back_size_cm: Optional[float] = Form(None, description="Back sticker size in cm"),
-    sticker_shape: str = Form("square", description="Sticker shape model: 'square' or 'circle'"),
+    sticker_shape: str = Form("square", description="Bentuk stiker kalibrasi: 'square' (persegi) atau 'circle' (lingkaran)"),
+    side_sticker_cm: float = Form(10.16, description="Ukuran stiker samping dalam cm (panjang sisi jika persegi, atau diameter jika lingkaran)"),
+    back_sticker_cm: float = Form(10.16, description="Ukuran stiker belakang dalam cm (panjang sisi jika persegi, atau diameter jika lingkaran)"),
     include_visualizations: bool = Form(True, description="Whether to include Base64 PNG visualization overlay images"),
     registry: ModelRegistry = Depends(get_registry),
 ) -> PredictionResponse:
     # Resolve shape mode
     shape_mode = "circle" if str(sticker_shape).lower().startswith("cir") else "square"
-
-    # Resolving side sticker dimension (cm)
-    if side_diameter_cm is not None:
-        side_dim = float(side_diameter_cm)
-    elif diameter_cm is not None and shape_mode == "circle":
-        side_dim = float(diameter_cm)
-    elif side_size_cm is not None:
-        side_dim = float(side_size_cm)
-    elif side_sticker_cm is not None:
-        side_dim = float(side_sticker_cm)
-    else:
-        side_dim = 14.0 if shape_mode == "circle" else 10.16
-
-    # Resolving back sticker dimension (cm)
-    if back_diameter_cm is not None:
-        back_dim = float(back_diameter_cm)
-    elif diameter_cm is not None and shape_mode == "circle":
-        back_dim = float(diameter_cm)
-    elif back_size_cm is not None:
-        back_dim = float(back_size_cm)
-    elif back_sticker_cm is not None:
-        back_dim = float(back_sticker_cm)
-    else:
-        back_dim = 14.0 if shape_mode == "circle" else 10.16
+    side_dim = float(side_sticker_cm)
+    back_dim = float(back_sticker_cm)
 
     # Read image bytes in the async context (non-blocking I/O)
     side_bytes, back_bytes = await asyncio.gather(

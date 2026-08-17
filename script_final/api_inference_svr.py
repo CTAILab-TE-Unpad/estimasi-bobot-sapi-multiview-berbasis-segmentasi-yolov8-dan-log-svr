@@ -422,16 +422,11 @@ def generate_visualizations(
 # --- API Endpoint ---
 @app.post("/predict", summary="Inference endpoint to calculate physical dimensions and estimate weight.")
 async def predict(
-    side_image: UploadFile = File(..., description="JPEG/PNG image representing side view of the cow"),
-    back_image: UploadFile = File(..., description="JPEG/PNG image representing back view of the cow"),
-    side_sticker_cm: Optional[float] = Form(None, description="Panjang sisi persegi atau diameter lingkaran stiker tampak samping (cm)"),
-    back_sticker_cm: Optional[float] = Form(None, description="Panjang sisi persegi atau diameter lingkaran stiker tampak belakang (cm)"),
-    diameter_cm: Optional[float] = Form(None, description="Diameter stiker lingkaran (cm) jika menggunakan stiker bulat"),
-    side_diameter_cm: Optional[float] = Form(None, description="Diameter stiker lingkaran tampak samping (cm)"),
-    back_diameter_cm: Optional[float] = Form(None, description="Diameter stiker lingkaran tampak belakang (cm)"),
-    side_size_cm: Optional[float] = Form(None, description="Ukuran stiker tampak samping (cm)"),
-    back_size_cm: Optional[float] = Form(None, description="Ukuran stiker tampak belakang (cm)"),
-    sticker_shape: str = Form("square", description="Bentuk stiker: 'square' (persegi) atau 'circle' (lingkaran)")
+    side_image: UploadFile = File(..., description="JPEG/PNG citra sapi tampak samping"),
+    back_image: UploadFile = File(..., description="JPEG/PNG citra sapi tampak belakang"),
+    sticker_shape: str = Form("square", description="Bentuk stiker kalibrasi: 'square' (persegi) atau 'circle' (lingkaran)"),
+    side_sticker_cm: float = Form(10.16, description="Ukuran stiker samping dalam cm (panjang sisi jika persegi, atau diameter jika lingkaran)"),
+    back_sticker_cm: float = Form(10.16, description="Ukuran stiker belakang dalam cm (panjang sisi jika persegi, atau diameter jika lingkaran)")
 ):
     try:
         side_bytes = await side_image.read()
@@ -454,30 +449,8 @@ async def predict(
     
     # 1. Resolve sticker shape & dimension
     shape_mode = 'circle' if str(sticker_shape).lower().startswith('cir') else 'square'
-    
-    # Resolusi dimensi stiker samping (cm)
-    if side_diameter_cm is not None:
-        side_dim = float(side_diameter_cm)
-    elif diameter_cm is not None and shape_mode == 'circle':
-        side_dim = float(diameter_cm)
-    elif side_size_cm is not None:
-        side_dim = float(side_size_cm)
-    elif side_sticker_cm is not None:
-        side_dim = float(side_sticker_cm)
-    else:
-        side_dim = 14.0 if shape_mode == 'circle' else 10.16
-
-    # Resolusi dimensi stiker belakang (cm)
-    if back_diameter_cm is not None:
-        back_dim = float(back_diameter_cm)
-    elif diameter_cm is not None and shape_mode == 'circle':
-        back_dim = float(diameter_cm)
-    elif back_size_cm is not None:
-        back_dim = float(back_size_cm)
-    elif back_sticker_cm is not None:
-        back_dim = float(back_sticker_cm)
-    else:
-        back_dim = 14.0 if shape_mode == 'circle' else 10.16
+    side_dim = float(side_sticker_cm)
+    back_dim = float(back_sticker_cm)
 
     active_sticker_model = model_sticker_circle if shape_mode == 'circle' else model_sticker_square
     
