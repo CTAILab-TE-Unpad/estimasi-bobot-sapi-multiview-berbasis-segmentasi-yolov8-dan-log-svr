@@ -315,19 +315,19 @@ def draw_sticker_on_axes(ax, img: np.ndarray, res: dict, sticker_dim_cm: float, 
     else:
         ax.set_title(f"{title_prefix} Sticker\n[Sticker Undetected / Bridged]", fontsize=11, color='orange', fontweight='bold')
 
-def generate_visualizations(
+def generate_full_dashboard_webp_b64(
     side_img: np.ndarray, side_res: dict,
     back_img: np.ndarray, back_res: dict,
     S_side: float, S_back: float,
     BL_cm: float, WH_cm: float, b_cm: float, a_cm: float, CG_cm: float,
-    side_dim_cm: float, back_dim_cm: float, shape_mode: str
-) -> Dict[str, str]:
-    """Menghasilkan gambar visualisasi morfometrik dan deteksi stiker sesuai bentuk (Base64 PNG)."""
+    side_dim_cm: float, back_dim_cm: float, shape_mode: str,
+    webp_quality: int = 80
+) -> str:
+    """Menghasilkan satu visualisasi dashboard lengkap yang dikompresi ke format WebP (Base64 string)."""
     
-    # 1. Visualisasi Morfometrik Sapi (Side & Back)
-    fig_morph, axes_m = plt.subplots(1, 2, figsize=(16, 7))
+    fig_all, axes_all = plt.subplots(2, 2, figsize=(16, 12))
     
-    # Side Morfometri
+    # Side Blend & Annotations
     side_rgb = cv2.cvtColor(side_img, cv2.COLOR_BGR2RGB)
     ov_side = side_rgb.copy()
     ov_side[side_res['cow_mask'] == 255] = [0, 255, 0]
@@ -337,15 +337,15 @@ def generate_visualizations(
     y_min, y_max = side_res['y_min'], side_res['y_max']
     chest_x = side_res['chest_x']
     
-    axes_m[0].imshow(side_blend)
-    axes_m[0].plot([x_min + (x_max - x_min) / 2]*2, [y_min, y_max], 'c-', lw=4, label=f'WH = {WH_cm:.1f} cm')
-    axes_m[0].plot([x_min, x_max], [y_min + int((y_max - y_min)*0.15)]*2, 'y-', lw=4, label=f'BL = {BL_cm:.1f} cm')
-    axes_m[0].plot([chest_x]*2, [side_res['WH_y_start'], side_res['WH_y_end']], 'm-', lw=4, label=f'2b = {2*b_cm:.1f} cm')
-    axes_m[0].set_title(f"Morfometri Tampak Samping (Side View)\nS_factor = {S_side:.5f} cm/px", fontsize=12, fontweight='bold')
-    axes_m[0].legend(loc='upper right', fontsize=10)
-    axes_m[0].axis('off')
+    axes_all[0, 0].imshow(side_blend)
+    axes_all[0, 0].plot([x_min + (x_max - x_min) / 2]*2, [y_min, y_max], 'c-', lw=3, label=f'WH = {WH_cm:.1f} cm')
+    axes_all[0, 0].plot([x_min, x_max], [y_min + int((y_max - y_min)*0.15)]*2, 'y-', lw=3, label=f'BL = {BL_cm:.1f} cm')
+    axes_all[0, 0].plot([chest_x]*2, [side_res['WH_y_start'], side_res['WH_y_end']], 'm-', lw=3, label=f'2b = {2*b_cm:.1f} cm')
+    axes_all[0, 0].set_title(f"Morfometri Samping (BL={BL_cm:.1f}cm, WH={WH_cm:.1f}cm, 2b={2*b_cm:.1f}cm)", fontsize=11, fontweight='bold')
+    axes_all[0, 0].legend(loc='upper right', fontsize=8)
+    axes_all[0, 0].axis('off')
     
-    # Back Morfometri
+    # Back Blend & Annotations
     back_rgb = cv2.cvtColor(back_img, cv2.COLOR_BGR2RGB)
     ov_back = back_rgb.copy()
     ov_back[back_res['cow_mask'] == 255] = [0, 255, 0]
@@ -356,49 +356,10 @@ def generate_visualizations(
     a_px = back_res['a_px']
     b_px = side_res['b_px']
     
-    axes_m[1].imshow(back_blend)
-    axes_m[1].plot([xc - a_px, xc + a_px], [yc]*2, 'm-', lw=4, label=f'2a = {2*a_cm:.1f} cm')
-    ellipse_girth = patches.Ellipse((xc, yc), 2 * a_px, 2 * b_px, fill=False, edgecolor='deepskyblue', lw=3, label=f'CG = {CG_cm:.1f} cm')
-    axes_m[1].add_patch(ellipse_girth)
-    axes_m[1].set_title(f"Morfometri Tampak Belakang (Back View)\nS_factor = {S_back:.5f} cm/px", fontsize=12, fontweight='bold')
-    axes_m[1].legend(loc='upper right', fontsize=10)
-    axes_m[1].axis('off')
-    
-    plt.tight_layout()
-    buf_m = io.BytesIO()
-    fig_morph.savefig(buf_m, format='png', bbox_inches='tight', dpi=120)
-    buf_m.seek(0)
-    morph_b64 = base64.b64encode(buf_m.read()).decode('utf-8')
-    plt.close(fig_morph)
-    
-    # 2. Visualisasi Deteksi Stiker Sesuai Bentuk (Side & Back Zoom-in)
-    fig_stick, axes_s = plt.subplots(1, 2, figsize=(14, 6))
-    draw_sticker_on_axes(axes_s[0], side_img, side_res, side_dim_cm, S_side, "Tampak Samping")
-    draw_sticker_on_axes(axes_s[1], back_img, back_res, back_dim_cm, S_back, "Tampak Belakang")
-    
-    plt.tight_layout()
-    buf_s = io.BytesIO()
-    fig_stick.savefig(buf_s, format='png', bbox_inches='tight', dpi=120)
-    buf_s.seek(0)
-    sticker_b64 = base64.b64encode(buf_s.read()).decode('utf-8')
-    plt.close(fig_stick)
-    
-    # 3. Visualisasi Dashboard Lengkap (4 Panel Grid)
-    fig_all, axes_all = plt.subplots(2, 2, figsize=(16, 12))
-    
-    # Row 1: Morfometri
-    axes_all[0, 0].imshow(side_blend)
-    axes_all[0, 0].plot([x_min + (x_max - x_min) / 2]*2, [y_min, y_max], 'c-', lw=3, label=f'WH = {WH_cm:.1f} cm')
-    axes_all[0, 0].plot([x_min, x_max], [y_min + int((y_max - y_min)*0.15)]*2, 'y-', lw=3, label=f'BL = {BL_cm:.1f} cm')
-    axes_all[0, 0].plot([chest_x]*2, [side_res['WH_y_start'], side_res['WH_y_end']], 'm-', lw=3, label=f'2b = {2*b_cm:.1f} cm')
-    axes_all[0, 0].set_title("Morfometri Samping (BL, WH, 2b)", fontsize=11, fontweight='bold')
-    axes_all[0, 0].legend(loc='upper right', fontsize=8)
-    axes_all[0, 0].axis('off')
-    
     axes_all[0, 1].imshow(back_blend)
     axes_all[0, 1].plot([xc - a_px, xc + a_px], [yc]*2, 'm-', lw=3, label=f'2a = {2*a_cm:.1f} cm')
     axes_all[0, 1].add_patch(patches.Ellipse((xc, yc), 2 * a_px, 2 * b_px, fill=False, edgecolor='deepskyblue', lw=3, label=f'CG = {CG_cm:.1f} cm'))
-    axes_all[0, 1].set_title("Morfometri Belakang (2a, CG)", fontsize=11, fontweight='bold')
+    axes_all[0, 1].set_title(f"Morfometri Belakang (2a={2*a_cm:.1f}cm, CG={CG_cm:.1f}cm)", fontsize=11, fontweight='bold')
     axes_all[0, 1].legend(loc='upper right', fontsize=8)
     axes_all[0, 1].axis('off')
     
@@ -407,17 +368,18 @@ def generate_visualizations(
     draw_sticker_on_axes(axes_all[1, 1], back_img, back_res, back_dim_cm, S_back, "Deteksi Stiker Belakang")
     
     plt.tight_layout()
-    buf_all = io.BytesIO()
-    fig_all.savefig(buf_all, format='png', bbox_inches='tight', dpi=120)
-    buf_all.seek(0)
-    full_b64 = base64.b64encode(buf_all.read()).decode('utf-8')
+    
+    # Render canvas to in-memory WebP image
+    fig_all.canvas.draw()
+    rgba_buffer = np.asarray(fig_all.canvas.buffer_rgba())
+    bgr_img = cv2.cvtColor(rgba_buffer, cv2.COLOR_RGBA2BGR)
     plt.close(fig_all)
     
-    return {
-        "morphometry_b64": morph_b64,
-        "sticker_detection_b64": sticker_b64,
-        "full_dashboard_b64": full_b64
-    }
+    success, webp_bytes = cv2.imencode('.webp', bgr_img, [cv2.IMWRITE_WEBP_QUALITY, webp_quality])
+    if not success:
+        raise RuntimeError("Gagal mengompresi gambar visualisasi ke format WebP.")
+        
+    return base64.b64encode(webp_bytes).decode('utf-8')
 
 # --- API Endpoint ---
 @app.post("/predict", summary="Inference endpoint to calculate physical dimensions and estimate weight.")
@@ -512,11 +474,11 @@ async def predict(
     log_pred = svr_pipe.predict(features_df)[0]
     weight_pred = float(np.exp(log_pred))
     
-    # 5. Generate Visualizations (Morphometry + Sticker Detection per Shape)
-    vis_dict = generate_visualizations(
+    # 5. Generate Compressed WebP Full Dashboard Visualization
+    full_dashboard_b64 = generate_full_dashboard_webp_b64(
         side_img, side_res, back_img, back_res,
         S_side, S_back, BL_cm, WH_cm, b_cm, a_cm, CG_cm,
-        side_dim, back_dim, shape_mode
+        side_dim, back_dim, shape_mode, webp_quality=80
     )
     
     response_payload = {
@@ -543,10 +505,7 @@ async def predict(
             "chest_depth_2b_cm": round(2 * b_cm, 2)
         },
         "all_model_features": {k: float(v) for k, v in features_dict.items()},
-        "visualizations": vis_dict,
-        "visualization_png_b64": vis_dict["full_dashboard_b64"],
-        "visualization_morphometry_b64": vis_dict["morphometry_b64"],
-        "visualization_sticker_b64": vis_dict["sticker_detection_b64"]
+        "full_dashboard_b64": full_dashboard_b64
     }
     
     return JSONResponse(content=response_payload)

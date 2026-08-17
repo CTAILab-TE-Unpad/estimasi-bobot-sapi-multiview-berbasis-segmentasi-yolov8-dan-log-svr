@@ -29,7 +29,4 @@ class PredictionResponse(BaseModel):
     calibration: CalibrationInfo
     measurements: PhysicalMeasurements
     model_features: dict[str, float]
-    visualizations: Optional[dict[str, str]] = Field(default=None, description="Base64 PNG visualizations for morphometry and sticker detection.")
-    visualization_png_b64: Optional[str] = Field(default=None, description="Combined dashboard visualization.")
-    visualization_morphometry_b64: Optional[str] = Field(default=None, description="Cattle morphometry visualization.")
-    visualization_sticker_b64: Optional[str] = Field(default=None, description="Sticker detection visualization according to shape.")
+    full_dashboard_b64: Optional[str] = Field(default=None, description="Base64 encoded compressed WebP image of full 4-panel dashboard.")
